@@ -126,6 +126,22 @@ class PopoutModule {
     };
     ui.windows = new Proxy(ui.windows, handler); // eslint-disable-line no-undef
     this.log("Installed window interceptor", ui.windows); // eslint-disable-line no-undef
+    
+    // Also hook into application rendering for ApplicationV2 compatibility
+    // eslint-disable-next-line no-undef
+    Hooks.on("renderApplication", (app, html) => {
+      this.log("Hook: renderApplication", app, html);
+      // Process all applications to add popout buttons, regardless of popOut option
+      // The popOut option is only checked when actually attempting to popout
+      if (
+        app &&
+        app.appId &&
+        !app.options?.popOutModuleDisable &&
+        !this.poppedOut.has(app.appId)
+      ) {
+        this.addPopout(app).catch((err) => this.log(err));
+      }
+    });
 
     // NOTE(posnet: 2022-03-13): We need to overwrite the behavior of the hasFocus method of
     // the game keyboard class since it does not check all documents.
@@ -183,17 +199,35 @@ class PopoutModule {
       return;
     }
 
-    let waitRender = Math.floor(this.MAX_TIMEOUT / this.TIMEOUT_INTERVAL);
-    while (
-      app._state !== Application.RENDER_STATES.RENDERED && // eslint-disable-line no-undef
-      waitRender-- > 0
-    ) {
-      await new Promise((r) => setTimeout(r, this.TIMEOUT_INTERVAL));
-    }
+    // Check if this is an ApplicationV2 instance
     // eslint-disable-next-line no-undef
-    if (app._state !== Application.RENDER_STATES.RENDERED) {
-      this.log("Timeout out waiting for app to render");
-      return;
+    const isAppV2 = foundry?.applications?.api?.ApplicationV2 && app instanceof foundry.applications.api.ApplicationV2;
+    
+    let waitRender = Math.floor(this.MAX_TIMEOUT / this.TIMEOUT_INTERVAL);
+    // Different render state checking for ApplicationV2
+    if (isAppV2) {
+      while (
+        app.rendered === false && 
+        waitRender-- > 0
+      ) {
+        await new Promise((r) => setTimeout(r, this.TIMEOUT_INTERVAL));
+      }
+      if (!app.rendered) {
+        this.log("Timeout out waiting for ApplicationV2 to render");
+        return;
+      }
+    } else {
+      while (
+        app._state !== Application.RENDER_STATES.RENDERED && // eslint-disable-line no-undef
+        waitRender-- > 0
+      ) {
+        await new Promise((r) => setTimeout(r, this.TIMEOUT_INTERVAL));
+      }
+      // eslint-disable-next-line no-undef
+      if (app._state !== Application.RENDER_STATES.RENDERED) {
+        this.log("Timeout out waiting for app to render");
+        return;
+      }
     }
 
     if (this.handleChildDialog(app)) {
@@ -219,7 +253,56 @@ class PopoutModule {
       link.on("click", () => this.onPopoutClicked(app));
       // eslint-disable-next-line no-undef
       if (game && game.settings.get("popout", "showButton")) {
-        app.element.find(".window-title").after(link);
+        // Check if this is an ApplicationV2 instance
+        // eslint-disable-next-line no-undef
+        const isAppV2 = foundry?.applications?.api?.ApplicationV2 && app instanceof foundry.applications.api.ApplicationV2;
+        
+        if (isAppV2) {
+          // ApplicationV2 uses different header structure
+          let titleElement = app.element.find(".window-title");
+          if (!titleElement.length) {
+            titleElement = app.element.find("header .window-title");
+          }
+          if (!titleElement.length) {
+            titleElement = app.element.find("header h1, header h2, header h3, header h4");
+          }
+          
+          if (titleElement.length) {
+            titleElement.after(link);
+          } else {
+            // For ApplicationV2, try to add to window controls area
+            const controlsElement = app.element.find(".window-controls, header .controls").first();
+            if (controlsElement.length) {
+              controlsElement.prepend(link);
+            } else {
+              // Final fallback for ApplicationV2
+              const headerElement = app.element.find("header").first();
+              if (headerElement.length) {
+                headerElement.append(link);
+              } else {
+                this.log("Could not find suitable header element in ApplicationV2 to attach popout button");
+              }
+            }
+          }
+        } else {
+          // Legacy Application structure
+          let titleElement = app.element.find(".window-title");
+          if (!titleElement.length) {
+            // Try alternative header structure
+            titleElement = app.element.find("header h4");
+          }
+          if (titleElement.length) {
+            titleElement.after(link);
+          } else {
+            // Fallback: add to window header if we can find it
+            const headerElement = app.element.find(".window-header, header").first();
+            if (headerElement.length) {
+              headerElement.append(link);
+            } else {
+              this.log("Could not find suitable header element to attach popout button");
+            }
+          }
+        }
       }
       this.log("Attached", app);
     }
