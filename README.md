@@ -22,7 +22,7 @@ Due to the necessarily brittle nature of how this module is implemented, other m
 
 # Installation
 
-Install using the URL : `https://raw.githubusercontent.com/League-of-Foundry-Developers/fvtt-module-popout/master/module.json`
+Install using the URL : `https://raw.githubusercontent.com/bsmccain/fvtt-module-popout/master/module.json`
 
 As DM go to the `Manage Modules` options menu in your Game Settings tab then enable the `PopOut!` module.
 
