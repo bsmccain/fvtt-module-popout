@@ -6,27 +6,17 @@ class PopoutModule {
     this.TIMEOUT_INTERVAL = 50; // ms
     this.MAX_TIMEOUT = 1000; // ms
     // Random id to prevent collision with other modules;
+    // eslint-disable-next-line no-undef
     if (game.release.generation >= 12) {
       this.ID = foundry.utils.randomID(24); // eslint-disable-line no-undef
     } else {
       this.ID = randomID(24); // eslint-disable-line no-undef
     }
-    this.eventDispatcher = undefined;
-    this.lastTooltipDest = undefined;
-
-    // apply a red box to the tooltip to make it easier to debug.
-    // and force it to be visible
-    document.getElementById("tooltip").style.border = "1px solid red";
-    document.getElementById("tooltip").style.opacity = "100%";
-    document.getElementById("tooltip").style.display = "visible";
-
-    window.ID = "MAIN WINDOW";
   }
 
   log(msg, ...args) {
     // eslint-disable-next-line no-undef
-    // NO CHECKIN
-    if (game || game.settings.get("popout", "verboseLogs")) {
+    if (game && game.settings.get("popout", "verboseLogs")) {
       const color = "background: #6699ff; color: #000; font-size: larger;";
       console.debug(`%c PopoutModule: ${msg}`, color, ...args);
     }
@@ -137,37 +127,6 @@ class PopoutModule {
     ui.windows = new Proxy(ui.windows, handler); // eslint-disable-line no-undef
     this.log("Installed window interceptor", ui.windows); // eslint-disable-line no-undef
 
-    // COMPAT(posnet: 2022-09-24) v10 prosemirror
-    // This is very stupid and bad, but people seem unaware that getElementById is not good.
-    // In theory this might have performance issues, but I don't care at this point.
-    // And it does fix the problem with prosemirror, and will help with any other modules making
-    // the same mistake.
-    // eslint-disable-next-line no-undef
-    if (game.release.generation >= 10) {
-      const outerThis = this;
-      const oldGetElementById = document.getElementById.bind(document);
-      document.getElementById = function (id) {
-        if (id == "tooltip") {
-          if (outerThis.lastTooltipDest !== undefined) {
-            return outerThis.lastTooltipDest;
-          }
-        }
-        let elem = oldGetElementById(id);
-        if (elem === null && this.poppedOut.size > 0) {
-          for (const entry of this.poppedOut) {
-            const doc = entry[1].window.document;
-            elem = doc.getElementById(id);
-            if (elem !== null) break;
-          }
-        }
-        return elem;
-      }.bind(this);
-
-      this.eventDispatcher = document.createElement("div");
-      this.eventDispatcher.id = `PopOutToolTipProxy-${this.ID}`;
-      document.body.appendChild(this.eventDispatcher);
-    }
-
     // NOTE(posnet: 2022-03-13): We need to overwrite the behavior of the hasFocus method of
     // the game keyboard class since it does not check all documents.
     // eslint-disable-next-line no-undef
@@ -192,7 +151,7 @@ class PopoutModule {
         }
         return hasFocus;
       },
-      "OVERRIDE"
+      "OVERRIDE",
     );
 
     // NOTE(posnet: 2020-07-12): we need to initialize TinyMCE to ensure its plugins,
@@ -201,44 +160,13 @@ class PopoutModule {
     // This will affect any module that lazy loads JavaScript. And require special handling.
     /* eslint-disable no-undef */
     const elem = $(
-      `<div style="display: none;"><p id="mce_init"> foo </p></div>`
+      `<div style="display: none;"><p id="mce_init"> foo </p></div>`,
     );
     $("body").append(elem);
     const config = { target: elem[0], plugins: CONFIG.TinyMCE.plugins };
     const editor = await tinyMCE.init(config);
     editor[0].remove();
     /* eslint-enable no-undef */
-  }
-
-  dispatchEvent(kind, clientX, clientY, target, dest) {
-    if (target && target.dataset && target.dataset.tooltip) {
-      this.log("Dispatch event", target, dest, this.eventDispatcher);
-    }
-    if (target !== null && this.eventDispatcher !== undefined) {
-      if (target.dataset !== undefined) {
-        // delete existing values;
-        this.lastTooltipDest = dest;
-        if (this.eventDispatcher.dataset !== undefined) {
-          for (const key in this.eventDispatcher.dataset) {
-            delete this.eventDispatcher.dataset[key];
-          }
-        }
-        for (const key in target.dataset) {
-          this.eventDispatcher.dataset[key] = target.dataset[key];
-        }
-        const customEvent = new PointerEvent(kind, {
-          bubbles: true,
-          cancelable: true,
-          clientX: clientX,
-          clientY: clientY,
-          target: target,
-        });
-        this.eventDispatcher.dispatchEvent(customEvent);
-        if (dest !== undefined) {
-          game.tooltip.tooltip = dest;
-        }
-      }
-    }
   }
 
   async addPopout(app) {
@@ -283,8 +211,8 @@ class PopoutModule {
       }
       const link = $(
         `<a id="${domID}" class="popout-module-button"><i class="fas fa-external-link-alt" title="${game.i18n.localize(
-          "POPOUT.PopOut"
-        )}"></i>${buttonText}</a>`
+          "POPOUT.PopOut",
+        )}"></i>${buttonText}</a>`,
       );
       /* eslint-enable no-undef */
 
@@ -418,11 +346,11 @@ class PopoutModule {
     html.style.cssText = document.documentElement.style.cssText;
     const head = document.importNode(
       document.getElementsByTagName("head")[0],
-      true
+      true,
     );
     const body = document.importNode(
       document.getElementsByTagName("body")[0],
-      false
+      false,
     );
 
     for (const child of [...head.children]) {
@@ -528,6 +456,90 @@ class PopoutModule {
     return popout;
   }
 
+  setupPopoutTooltips(popout) {
+    try {
+      // Check if tooltip support is available
+      // eslint-disable-next-line no-undef
+      if (!game.tooltip) {
+        this.log("No tooltip manager available, skipping tooltip setup");
+        return;
+      }
+
+      // Create a tooltip manager instance for this popout window
+      // eslint-disable-next-line no-undef
+      const TooltipClass = game.tooltip.constructor;
+      const popoutTooltip = new TooltipClass();
+
+      // Override the tooltip element getter to use the popout's tooltip element
+      Object.defineProperty(popoutTooltip, "tooltip", {
+        get: function () {
+          return popout.document.getElementById("tooltip");
+        },
+        configurable: true,
+      });
+
+      // Store reference to the tooltip manager
+      popout.game = popout.game || {};
+      popout.game.tooltip = popoutTooltip;
+
+      // Activate event listeners for the popout window's tooltip
+      // Check if activateEventListeners method exists (it should in v10+)
+      if (typeof popoutTooltip.activateEventListeners === "function") {
+        popoutTooltip.activateEventListeners();
+      }
+
+      // Handle tooltip data attributes in the popout window
+      popout.document.addEventListener(
+        "pointerenter",
+        (event) => {
+          const target = event.target;
+          if (target.dataset?.tooltip) {
+            // Check if activate method exists
+            if (typeof popoutTooltip.activate === "function") {
+              const options = {
+                text: target.dataset.tooltip,
+              };
+              
+              // Add direction if TOOLTIP_DIRECTIONS exists
+              if (TooltipClass.TOOLTIP_DIRECTIONS) {
+                options.direction = target.dataset.tooltipDirection || TooltipClass.TOOLTIP_DIRECTIONS.UP;
+              }
+              
+              popoutTooltip.activate(target, options);
+            }
+          }
+        },
+        true,
+      );
+
+      popout.document.addEventListener(
+        "pointerleave",
+        (event) => {
+          const target = event.target;
+          if (target.dataset?.tooltip) {
+            // Check if deactivate method exists
+            if (typeof popoutTooltip.deactivate === "function") {
+              popoutTooltip.deactivate();
+            }
+          }
+        },
+        true,
+      );
+
+      // Ensure tooltip is hidden when window loses focus
+      popout.addEventListener("blur", () => {
+        if (typeof popoutTooltip.deactivate === "function") {
+          popoutTooltip.deactivate();
+        }
+      });
+
+      this.log("Tooltip handling configured for popout window");
+    } catch (error) {
+      this.log("Error setting up tooltips for popout window:", error);
+      // Continue without tooltips rather than breaking the popout functionality
+    }
+  }
+
   onPopoutClicked(app) {
     // Check if popout in Electron window
     if (navigator.userAgent.toLowerCase().indexOf(" electron/") !== -1) {
@@ -619,8 +631,8 @@ class PopoutModule {
         $(child)
           .html(
             `<i class="fas fa-sign-in-alt" title="${game.i18n.localize(
-              "POPOUT.PopIn"
-            )}"></i>${buttonText}`
+              "POPOUT.PopIn",
+            )}"></i>${buttonText}`,
           )
           .off("click")
           .on("click", (event) => {
@@ -808,7 +820,7 @@ class PopoutModule {
       });
       // Disable right-click
       popout.document.addEventListener("contextmenu", (ev) =>
-        ev.preventDefault()
+        ev.preventDefault(),
       );
       // Disable mouse 3, 4, and 5
       popout.document.addEventListener("pointerdown", (ev) => {
@@ -816,73 +828,14 @@ class PopoutModule {
       });
 
       popout.addEventListener("keydown", (event) =>
-        window.keyboard._handleKeyboardEvent(event, false)
+        window.keyboard._handleKeyboardEvent(event, false),
       );
       popout.addEventListener("keyup", (event) =>
-        window.keyboard._handleKeyboardEvent(event, true)
+        window.keyboard._handleKeyboardEvent(event, true),
       );
 
-      // Register event listeners in popout window and dispatch custom events to main window
-      const mainWindow = window;
-
-      popout.document.body.addEventListener(
-        "pointerenter",
-        (event) => {
-          this.dispatchEvent(
-            "pointerenter",
-            event.clientX,
-            event.clientY,
-            event.target,
-            popout.document.getElementById("tooltip")
-          );
-        },
-        true
-      );
-
-      popout.document.body.addEventListener(
-        "pointerleave",
-        (event) => {
-          this.dispatchEvent(
-            "pointerleave",
-            event.clientX,
-            event.clientY,
-            event.target,
-            popout.document.getElementById("tooltip")
-          );
-        },
-        true
-      );
-
-      popout.document.body.addEventListener(
-        "pointerup",
-        (event) => {
-          this.dispatchEvent(
-            "pointerup",
-            event.clientX,
-            event.clientY,
-            event.target,
-            popout.document.getElementById("tooltip")
-          );
-        },
-        true
-      );
-
-      popout.document.body.addEventListener(
-        "pointermove",
-        (event) => {
-          this.dispatchEvent(
-            "pointermove",
-            event.clientX,
-            event.clientY,
-            event.target,
-            popout.document.getElementById("tooltip")
-          );
-        },
-        true
-      );
-
-      popout.tooltip = new popout._rootWindow.game.tooltip.constructor();
-      popout.tooltip.activateEventListeners();
+      // Set up tooltip handling for popout window
+      this.setupPopoutTooltips(popout);
 
       this.log("Final node", node, app);
       Hooks.callAll("PopOut:loaded", app, node); // eslint-disable-line no-undef
@@ -943,7 +896,7 @@ class PopoutModule {
       if (this.poppedOut.has(app.appId)) {
         this.log(
           "Intercepted application setting position",
-          app.constructor.name
+          app.constructor.name,
         );
         return {};
       }
@@ -981,7 +934,7 @@ Hooks.on("ready", () => {
       if (app.pdfData && app.pdfData.url !== undefined) {
         app.open(
           new URL(app.pdfData.url, window.location).href,
-          app.pdfData.offset
+          app.pdfData.offset,
         );
       }
       if (app.onViewerReady !== undefined) {
