@@ -6,7 +6,12 @@ class PopoutModule {
     this.TIMEOUT_INTERVAL = 50; // ms
     this.MAX_TIMEOUT = 1000; // ms
     // Random id to prevent collision with other modules;
-    this.ID = randomID(24); // eslint-disable-line no-undef
+    // eslint-disable-next-line no-undef
+    if (game.release.generation >= 12) {
+      this.ID = foundry.utils.randomID(24); // eslint-disable-line no-undef
+    } else {
+      this.ID = randomID(24); // eslint-disable-line no-undef
+    }
   }
 
   log(msg, ...args) {
@@ -121,27 +126,22 @@ class PopoutModule {
     };
     ui.windows = new Proxy(ui.windows, handler); // eslint-disable-line no-undef
     this.log("Installed window interceptor", ui.windows); // eslint-disable-line no-undef
-
-    // COMPAT(posnet: 2022-09-24) v10 prosemirror
-    // This is very stupid and bad, but people seem unaware that getElementById is not good.
-    // In theory this might have performance issues, but I don't care at this point.
-    // And it does fix the problem with prosemirror, and will help with any other modules making
-    // the same mistake.
+    
+    // Also hook into application rendering for ApplicationV2 compatibility
     // eslint-disable-next-line no-undef
-    if (game.release.generation >= 10) {
-      const oldGetElementById = document.getElementById.bind(document);
-      document.getElementById = function (id) {
-        let elem = oldGetElementById(id);
-        if (elem === null && this.poppedOut.size > 0) {
-          for (const entry of this.poppedOut) {
-            const doc = entry[1].window.document;
-            elem = doc.getElementById(id);
-            if (elem !== null) break;
-          }
-        }
-        return elem;
-      }.bind(this);
-    }
+    Hooks.on("renderApplication", (app, html) => {
+      this.log("Hook: renderApplication", app, html);
+      // Process all applications to add popout buttons, regardless of popOut option
+      // The popOut option is only checked when actually attempting to popout
+      if (
+        app &&
+        app.appId &&
+        !app.options?.popOutModuleDisable &&
+        !this.poppedOut.has(app.appId)
+      ) {
+        this.addPopout(app).catch((err) => this.log(err));
+      }
+    });
 
     // NOTE(posnet: 2022-03-13): We need to overwrite the behavior of the hasFocus method of
     // the game keyboard class since it does not check all documents.
@@ -167,7 +167,7 @@ class PopoutModule {
         }
         return hasFocus;
       },
-      "OVERRIDE"
+      "OVERRIDE",
     );
 
     // NOTE(posnet: 2020-07-12): we need to initialize TinyMCE to ensure its plugins,
@@ -176,7 +176,7 @@ class PopoutModule {
     // This will affect any module that lazy loads JavaScript. And require special handling.
     /* eslint-disable no-undef */
     const elem = $(
-      `<div style="display: none;"><p id="mce_init"> foo </p></div>`
+      `<div style="display: none;"><p id="mce_init"> foo </p></div>`,
     );
     $("body").append(elem);
     const config = { target: elem[0], plugins: CONFIG.TinyMCE.plugins };
@@ -199,17 +199,35 @@ class PopoutModule {
       return;
     }
 
-    let waitRender = Math.floor(this.MAX_TIMEOUT / this.TIMEOUT_INTERVAL);
-    while (
-      app._state !== Application.RENDER_STATES.RENDERED && // eslint-disable-line no-undef
-      waitRender-- > 0
-    ) {
-      await new Promise((r) => setTimeout(r, this.TIMEOUT_INTERVAL));
-    }
+    // Check if this is an ApplicationV2 instance
     // eslint-disable-next-line no-undef
-    if (app._state !== Application.RENDER_STATES.RENDERED) {
-      this.log("Timeout out waiting for app to render");
-      return;
+    const isAppV2 = foundry?.applications?.api?.ApplicationV2 && app instanceof foundry.applications.api.ApplicationV2;
+    
+    let waitRender = Math.floor(this.MAX_TIMEOUT / this.TIMEOUT_INTERVAL);
+    // Different render state checking for ApplicationV2
+    if (isAppV2) {
+      while (
+        app.rendered === false && 
+        waitRender-- > 0
+      ) {
+        await new Promise((r) => setTimeout(r, this.TIMEOUT_INTERVAL));
+      }
+      if (!app.rendered) {
+        this.log("Timeout out waiting for ApplicationV2 to render");
+        return;
+      }
+    } else {
+      while (
+        app._state !== Application.RENDER_STATES.RENDERED && // eslint-disable-line no-undef
+        waitRender-- > 0
+      ) {
+        await new Promise((r) => setTimeout(r, this.TIMEOUT_INTERVAL));
+      }
+      // eslint-disable-next-line no-undef
+      if (app._state !== Application.RENDER_STATES.RENDERED) {
+        this.log("Timeout out waiting for app to render");
+        return;
+      }
     }
 
     if (this.handleChildDialog(app)) {
@@ -227,15 +245,64 @@ class PopoutModule {
       }
       const link = $(
         `<a id="${domID}" class="popout-module-button"><i class="fas fa-external-link-alt" title="${game.i18n.localize(
-          "POPOUT.PopOut"
-        )}"></i>${buttonText}</a>`
+          "POPOUT.PopOut",
+        )}"></i>${buttonText}</a>`,
       );
       /* eslint-enable no-undef */
 
       link.on("click", () => this.onPopoutClicked(app));
       // eslint-disable-next-line no-undef
       if (game && game.settings.get("popout", "showButton")) {
-        app.element.find(".window-title").after(link);
+        // Check if this is an ApplicationV2 instance
+        // eslint-disable-next-line no-undef
+        const isAppV2 = foundry?.applications?.api?.ApplicationV2 && app instanceof foundry.applications.api.ApplicationV2;
+        
+        if (isAppV2) {
+          // ApplicationV2 uses different header structure
+          let titleElement = app.element.find(".window-title");
+          if (!titleElement.length) {
+            titleElement = app.element.find("header .window-title");
+          }
+          if (!titleElement.length) {
+            titleElement = app.element.find("header h1, header h2, header h3, header h4");
+          }
+          
+          if (titleElement.length) {
+            titleElement.after(link);
+          } else {
+            // For ApplicationV2, try to add to window controls area
+            const controlsElement = app.element.find(".window-controls, header .controls").first();
+            if (controlsElement.length) {
+              controlsElement.prepend(link);
+            } else {
+              // Final fallback for ApplicationV2
+              const headerElement = app.element.find("header").first();
+              if (headerElement.length) {
+                headerElement.append(link);
+              } else {
+                this.log("Could not find suitable header element in ApplicationV2 to attach popout button");
+              }
+            }
+          }
+        } else {
+          // Legacy Application structure
+          let titleElement = app.element.find(".window-title");
+          if (!titleElement.length) {
+            // Try alternative header structure
+            titleElement = app.element.find("header h4");
+          }
+          if (titleElement.length) {
+            titleElement.after(link);
+          } else {
+            // Fallback: add to window header if we can find it
+            const headerElement = app.element.find(".window-header, header").first();
+            if (headerElement.length) {
+              headerElement.append(link);
+            } else {
+              this.log("Could not find suitable header element to attach popout button");
+            }
+          }
+        }
       }
       this.log("Attached", app);
     }
@@ -362,11 +429,11 @@ class PopoutModule {
     html.style.cssText = document.documentElement.style.cssText;
     const head = document.importNode(
       document.getElementsByTagName("head")[0],
-      true
+      true,
     );
     const body = document.importNode(
       document.getElementsByTagName("body")[0],
-      false
+      false,
     );
 
     for (const child of [...head.children]) {
@@ -388,23 +455,11 @@ class PopoutModule {
     cssFix.appendChild(document.createTextNode(cssFixContent));
     head.appendChild(cssFix);
 
-    // BROKEN(posnet: 2024-08-19): Giving up on tooltips for the moment
-    // I have a branch with a sort of viable solution, but it will be even more
-    // brittle, and I am very hesitant to commit to supporting it.
-    // // COMPAT(posnet: 2022-05-05):
-    // // Last ditch effort to support tooltips. By far the worst hack I've needed to do.
-    // // Basically I have just embedded a copy of the TooltipManager class from the base game directly
-    // // into the popped out window because all other attempts to hack arround it have failed,
-    // // either because it's extensive use of window and document methods, or the fact that it uses
-    // // private js members. If this breaks again, I will most likely just leave it broken.
-    // const tooltipNode = document.createElement("aside");
-    // tooltipNode.id = "tooltip";
-    // tooltipNode.role = "tooltip";
-    // body.appendChild(tooltipNode);
-
-    // const tooltipFix = document.createElement("script");
-    // tooltipFix.appendChild(document.createTextNode(this.TOOLTIP_CODE));
-    // head.append(tooltipFix);
+    // Remove embedding TooltipManager
+    const tooltipNode = document.createElement("aside");
+    tooltipNode.id = "tooltip";
+    tooltipNode.role = "tooltip";
+    body.appendChild(tooltipNode);
 
     html.appendChild(head);
     html.appendChild(body);
@@ -482,6 +537,90 @@ class PopoutModule {
     popout._rootWindow = window;
     this.log("Window opened", popout);
     return popout;
+  }
+
+  setupPopoutTooltips(popout) {
+    try {
+      // Check if tooltip support is available
+      // eslint-disable-next-line no-undef
+      if (!game.tooltip) {
+        this.log("No tooltip manager available, skipping tooltip setup");
+        return;
+      }
+
+      // Create a tooltip manager instance for this popout window
+      // eslint-disable-next-line no-undef
+      const TooltipClass = game.tooltip.constructor;
+      const popoutTooltip = new TooltipClass();
+
+      // Override the tooltip element getter to use the popout's tooltip element
+      Object.defineProperty(popoutTooltip, "tooltip", {
+        get: function () {
+          return popout.document.getElementById("tooltip");
+        },
+        configurable: true,
+      });
+
+      // Store reference to the tooltip manager
+      popout.game = popout.game || {};
+      popout.game.tooltip = popoutTooltip;
+
+      // Activate event listeners for the popout window's tooltip
+      // Check if activateEventListeners method exists (it should in v10+)
+      if (typeof popoutTooltip.activateEventListeners === "function") {
+        popoutTooltip.activateEventListeners();
+      }
+
+      // Handle tooltip data attributes in the popout window
+      popout.document.addEventListener(
+        "pointerenter",
+        (event) => {
+          const target = event.target;
+          if (target.dataset?.tooltip) {
+            // Check if activate method exists
+            if (typeof popoutTooltip.activate === "function") {
+              const options = {
+                text: target.dataset.tooltip,
+              };
+              
+              // Add direction if TOOLTIP_DIRECTIONS exists
+              if (TooltipClass.TOOLTIP_DIRECTIONS) {
+                options.direction = target.dataset.tooltipDirection || TooltipClass.TOOLTIP_DIRECTIONS.UP;
+              }
+              
+              popoutTooltip.activate(target, options);
+            }
+          }
+        },
+        true,
+      );
+
+      popout.document.addEventListener(
+        "pointerleave",
+        (event) => {
+          const target = event.target;
+          if (target.dataset?.tooltip) {
+            // Check if deactivate method exists
+            if (typeof popoutTooltip.deactivate === "function") {
+              popoutTooltip.deactivate();
+            }
+          }
+        },
+        true,
+      );
+
+      // Ensure tooltip is hidden when window loses focus
+      popout.addEventListener("blur", () => {
+        if (typeof popoutTooltip.deactivate === "function") {
+          popoutTooltip.deactivate();
+        }
+      });
+
+      this.log("Tooltip handling configured for popout window");
+    } catch (error) {
+      this.log("Error setting up tooltips for popout window:", error);
+      // Continue without tooltips rather than breaking the popout functionality
+    }
   }
 
   onPopoutClicked(app) {
@@ -575,8 +714,8 @@ class PopoutModule {
         $(child)
           .html(
             `<i class="fas fa-sign-in-alt" title="${game.i18n.localize(
-              "POPOUT.PopIn"
-            )}"></i>${buttonText}`
+              "POPOUT.PopIn",
+            )}"></i>${buttonText}`,
           )
           .off("click")
           .on("click", (event) => {
@@ -614,7 +753,6 @@ class PopoutModule {
       if (this.poppedOut.has(appId)) {
         await popout.close();
       }
-      event.returnValue = true;
     });
 
     popout.addEventListener("unload", async (event) => {
@@ -673,9 +811,8 @@ class PopoutModule {
           Hooks.callAll("PopOut:close", app, node); // eslint-disable-line no-undef
           await app.close();
         }
-        await popout.close();
+        popout.close();
       }
-      event.returnValue = true;
     });
 
     // -------------------- Move element to window --------------------
@@ -716,6 +853,7 @@ class PopoutModule {
     // We wait longer than just the DOMContentLoaded
     // because of how the document is constructed manually.
     popout.addEventListener("load", async (event) => {
+      popout.ID = "POPOUT";
       if (popout.screenX < 0 || popout.screenY < 0) {
         // Fallback in case for some reason the popout out window is not
         // on the visible screen. May not work or be blocked by popout blockers,
@@ -727,7 +865,7 @@ class PopoutModule {
       if (game.release.generation >= 10) {
         const allFonts = FontConfig._collectDefinitions(); // eslint-disable-line no-undef
         const families = new Set();
-        for (const definitions of allFonts) {
+        for (const definitions of Object.values(allFonts)) {
           for (const [family] of Object.entries(definitions)) {
             families.add(family);
           }
@@ -765,7 +903,7 @@ class PopoutModule {
       });
       // Disable right-click
       popout.document.addEventListener("contextmenu", (ev) =>
-        ev.preventDefault()
+        ev.preventDefault(),
       );
       // Disable mouse 3, 4, and 5
       popout.document.addEventListener("pointerdown", (ev) => {
@@ -773,72 +911,14 @@ class PopoutModule {
       });
 
       popout.addEventListener("keydown", (event) =>
-        window.keyboard._handleKeyboardEvent(event, false)
+        window.keyboard._handleKeyboardEvent(event, false),
       );
       popout.addEventListener("keyup", (event) =>
-        window.keyboard._handleKeyboardEvent(event, true)
+        window.keyboard._handleKeyboardEvent(event, true),
       );
 
-      // COMPAT(posnet: 2022-09-17) v9
-      // eslint-disable-next-line no-undef
-      if (game.release.generation < 10) {
-        // From: TextEditor.activateListeners();
-        // These event listeners don't get migrated because they are attached to a jQuery
-        // selected body. This could be more of an issue in future as anyone doing a delegated
-        // event handler will also fail. But that is bad practice.
-        // The following regex will find examples of delegated event handlers in foundry.js
-        // `on\(("|')[^'"]+("|'), *("|')`
-        const jBody = $(body); // eslint-disable-line no-undef
-        jBody.on(
-          "click",
-          "a.entity-link",
-          window.TextEditor._onClickEntityLink !== undefined
-            ? window.TextEditor._onClickEntityLink
-            : window.TextEditor._onClickContentLink
-        );
-        jBody.on(
-          "dragstart",
-          "a.entity-link",
-          window.TextEditor._onDragEntityLink
-        );
-        jBody.on(
-          "click",
-          "a.inline-roll",
-          window.TextEditor._onClickInlineRoll
-        );
-      } else {
-        // From: TextEditor.activateListeners();
-        // These event listeners don't get migrated because they are attached to a jQuery
-        // selected body. This could be more of an issue in future as anyone doing a delegated
-        // event handler will also fail. But that is bad practice.
-        // The following regex will find examples of delegated event handlers in foundry.js
-        // `on\(("|')[^'"]+("|'), *("|')`
-        const jBody = $(body); // eslint-disable-line no-undef
-        jBody.on(
-          "click",
-          "a.content-link",
-          window.TextEditor._onClickEntityLink !== undefined
-            ? window.TextEditor._onClickEntityLink
-            : window.TextEditor._onClickContentLink
-        );
-        jBody.on(
-          "dragstart",
-          "a.content-link",
-          window.TextEditor._onDragEntityLink !== undefined
-            ? window.TextEditor._onDragEntityLink
-            : window.TextEditor._onDragContentLink
-        );
-        jBody.on(
-          "click",
-          "a.inline-roll",
-          window.TextEditor._onClickInlineRoll
-        );
-      }
-
-      popout.game = game; // eslint-disable-line no-undef
-      popout.tooltip_manager.tooltip =
-        popout.document.getElementById("tooltip");
-      popout.tooltip_manager.activateEventListeners();
+      // Set up tooltip handling for popout window
+      this.setupPopoutTooltips(popout);
 
       this.log("Final node", node, app);
       Hooks.callAll("PopOut:loaded", app, node); // eslint-disable-line no-undef
@@ -899,7 +979,7 @@ class PopoutModule {
       if (this.poppedOut.has(app.appId)) {
         this.log(
           "Intercepted application setting position",
-          app.constructor.name
+          app.constructor.name,
         );
         return {};
       }
@@ -937,7 +1017,7 @@ Hooks.on("ready", () => {
       if (app.pdfData && app.pdfData.url !== undefined) {
         app.open(
           new URL(app.pdfData.url, window.location).href,
-          app.pdfData.offset
+          app.pdfData.offset,
         );
       }
       if (app.onViewerReady !== undefined) {
